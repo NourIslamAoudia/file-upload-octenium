@@ -247,6 +247,21 @@ const uploadFile = async (file) => {
 
 ---
 
+## Limites Vercel
+
+Si vous déployez ce serveur sur **Vercel**, prenez en compte les limites suivantes :
+
+| Limite                   | Valeur                                    |
+| ------------------------ | ----------------------------------------- |
+| **Request body max**     | **4.5 MB** — hard limit, pas configurable |
+| **Maximum memory**       | Hobby : 2 GB, Pro : 4 GB                  |
+| **Maximum duration**     | Hobby : 300s, Pro : 800s                  |
+| **Function size (gzip)** | 250 MB                                    |
+
+> **⚠️ Important :** La limite de **4.5 MB** sur le body de la requête est un hard limit imposé par Vercel et ne peut pas être modifiée. Cela signifie que les fichiers uploadés ne peuvent pas dépasser cette taille lors d'un déploiement sur Vercel, même si le serveur autorise jusqu'à 50 Mo en local.
+
+---
+
 ## Licence
 
 ISC

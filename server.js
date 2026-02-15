@@ -50,7 +50,9 @@ app.post("/api/upload", limiter, upload.single("file"), async (req, res) => {
   // ✅ Vérification MIME réelle depuis le buffer
   const real = await fileTypeFromBuffer(req.file.buffer);
   if (!real || !ALLOWED_MIMES.has(real.mime)) {
-    return res.status(400).json({ error: "Fichier invalide ou type non autorisé" });
+    return res
+      .status(400)
+      .json({ error: "Fichier invalide ou type non autorisé" });
   }
 
   // ✅ Nom aléatoire sécurisé
