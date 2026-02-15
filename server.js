@@ -4,34 +4,47 @@ import * as ftp from "basic-ftp";
 import dotenv from "dotenv";
 import cors from "cors";
 import { unlink } from "fs/promises";
+import { fileTypeFromFile } from "file-type"; // ✅ npm install file-type
+import rateLimit from "express-rate-limit"; // ✅ npm install express-rate-limit
+import path from "path";
+import crypto from "crypto";
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
 
+// ─── Rate Limiting ────────────────────────────────────────────────────────────
+
+const limiter = rateLimit({
+  windowMs: 60_000, // 1 minute
+  max: 20, // 20 uploads max par IP
+  message: { error: "Trop de requêtes, réessaye dans 1 minute." },
+});
+
 // ─── Multer ───────────────────────────────────────────────────────────────────
+
+const ALLOWED_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "video/mp4",
+  "video/quicktime",
+]);
 
 const upload = multer({
   storage: multer.diskStorage({
     destination: "/tmp",
     filename: (req, file, cb) => {
-      const safe = file.originalname
-        .replace(/\s/g, "_")
-        .replace(/[^a-zA-Z0-9._-]/g, "");
-      cb(null, `${Date.now()}-${safe}`);
+      // ✅ 1. Nom aléatoire — évite path traversal et conflits
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `${Date.now()}-${crypto.randomUUID()}${ext}`);
     },
   }),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter: (req, file, cb) => {
-    const allowed = [
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "video/mp4",
-      "video/quicktime",
-    ];
-    allowed.includes(file.mimetype)
+    // Premier filtre rapide sur le MIME déclaré
+    ALLOWED_MIMES.has(file.mimetype)
       ? cb(null, true)
       : cb(new Error("Type non autorisé"));
   },
@@ -39,8 +52,17 @@ const upload = multer({
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
 
-app.post("/api/upload", upload.single("file"), async (req, res) => {
+app.post("/api/upload", limiter, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Aucun fichier reçu" });
+
+  // ✅ 4. Vérification MIME réelle (contenu du fichier, pas juste le header)
+  const real = await fileTypeFromFile(req.file.path);
+  if (!real || !ALLOWED_MIMES.has(real.mime)) {
+    await unlink(req.file.path).catch(() => {});
+    return res
+      .status(400)
+      .json({ error: "Fichier invalide ou type non autorisé" });
+  }
 
   const client = new ftp.Client(30_000);
   client.ftp.verbose = false;

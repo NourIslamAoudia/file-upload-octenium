@@ -1,6 +1,6 @@
 # Upload Media Server
 
-Microservice Node.js permettant d'uploader des fichiers médias (images et vidéos) vers un serveur FTP distant via une API REST.
+Microservice Node.js **sécurisé** permettant d'uploader des fichiers médias (images et vidéos) vers un serveur FTP distant via une API REST.
 
 ---
 
@@ -8,24 +8,28 @@ Microservice Node.js permettant d'uploader des fichiers médias (images et vidé
 
 Le serveur expose un endpoint `POST /api/upload` qui :
 
-1. Reçoit un fichier via un formulaire `multipart/form-data` (champ `file`).
-2. Valide le type MIME (JPEG, PNG, WebP, MP4, QuickTime) et la taille (max 50 Mo).
-3. Enregistre temporairement le fichier dans `/tmp`.
-4. Transfère le fichier vers un serveur FTP distant configuré via les variables d'environnement.
-5. Supprime le fichier temporaire local.
-6. Retourne l'URL publique du fichier uploadé.
+1. **Rate limiting** — vérifie que l'IP n'a pas dépassé la limite de requêtes (20 req/min).
+2. Reçoit un fichier via un formulaire `multipart/form-data` (champ `file`).
+3. Valide le type MIME déclaré (JPEG, PNG, WebP, MP4, QuickTime) et la taille (max 50 Mo).
+4. Enregistre temporairement le fichier dans `/tmp` avec un **nom aléatoire** (UUID + timestamp).
+5. **Vérifie le type MIME réel** du fichier (magic bytes) via `file-type` pour empêcher l'usurpation d'extension.
+6. Transfère le fichier vers un serveur FTP distant configuré via les variables d'environnement.
+7. Supprime le fichier temporaire local.
+8. Retourne l'URL publique du fichier uploadé.
 
 ---
 
 ## Stack technique
 
-| Dépendance    | Rôle                                                   |
-| ------------- | ------------------------------------------------------ |
-| **Express 5** | Framework HTTP                                         |
-| **Multer 2**  | Gestion des uploads `multipart/form-data`              |
-| **basic-ftp** | Client FTP pour le transfert vers le serveur distant   |
-| **dotenv**    | Chargement des variables d'environnement depuis `.env` |
-| **cors**      | Autorisation des requêtes cross-origin                 |
+| Dépendance             | Rôle                                                           |
+| ---------------------- | -------------------------------------------------------------- |
+| **Express 5**          | Framework HTTP                                                 |
+| **Multer 2**           | Gestion des uploads `multipart/form-data`                      |
+| **basic-ftp**          | Client FTP pour le transfert vers le serveur distant           |
+| **dotenv**             | Chargement des variables d'environnement depuis `.env`         |
+| **cors**               | Autorisation des requêtes cross-origin                         |
+| **file-type**          | Vérification du type MIME réel (magic bytes) du fichier        |
+| **express-rate-limit** | Limitation du nombre de requêtes par IP (protection anti-abus) |
 
 ---
 
@@ -114,6 +118,21 @@ Content-Type: multipart/form-data
 
 ---
 
+## Sécurité
+
+Le serveur implémente plusieurs couches de sécurité :
+
+| Mesure                     | Description                                                                                                                                                                                                                                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rate Limiting**          | Maximum **20 requêtes par minute** par adresse IP. Au-delà, le serveur retourne une erreur `429 Too Many Requests`.                                                                                                                                             |
+| **Nommage aléatoire**      | Les fichiers sont renommés avec un **UUID + timestamp** (`1739612345678-550e8400-e29b-41d4-a716-446655440000.jpg`), ce qui empêche les attaques par **path traversal** et les conflits de noms.                                                                 |
+| **Double validation MIME** | Le type MIME est vérifié **deux fois** : d'abord via le header HTTP (filtre rapide Multer), puis via l'analyse des **magic bytes** du fichier réel avec `file-type`. Cela empêche un utilisateur de renommer un exécutable en `.jpg` pour contourner le filtre. |
+| **Limite de taille**       | Fichiers limités à **50 Mo** maximum.                                                                                                                                                                                                                           |
+| **Nettoyage automatique**  | Les fichiers temporaires sont systématiquement supprimés après le transfert FTP, même en cas d'erreur.                                                                                                                                                          |
+| **CORS activé**            | Les requêtes cross-origin sont autorisées de manière contrôlée.                                                                                                                                                                                                 |
+
+---
+
 ### Exemples d'appel
 
 #### cURL
@@ -174,11 +193,19 @@ print(response.json()["url"])
 }
 ```
 
-#### Erreur — type non autorisé (`400`)
+#### Erreur — fichier invalide ou type non autorisé (`400`)
 
 ```json
 {
-  "error": "Type non autorisé"
+  "error": "Fichier invalide ou type non autorisé"
+}
+```
+
+#### Erreur — rate limit dépassé (`429`)
+
+```json
+{
+  "error": "Trop de requêtes, réessaye dans 1 minute."
 }
 ```
 
