@@ -3,23 +3,26 @@ import multer from "multer";
 import * as ftp from "basic-ftp";
 import dotenv from "dotenv";
 import cors from "cors";
-import path from "path";
-import { Readable } from "stream";
+import { unlink } from "fs/promises";
 
 dotenv.config();
 
 const app = express();
+app.use(cors());
 
-app.use(
-  cors({
-    origin: ["https://file-upload-octenium-ui.vercel.app"],
-  }),
-);
+// ─── Multer ───────────────────────────────────────────────────────────────────
 
-const storage = multer.memoryStorage();
 const upload = multer({
-  storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+  storage: multer.diskStorage({
+    destination: "/tmp",
+    filename: (req, file, cb) => {
+      const safe = file.originalname
+        .replace(/\s/g, "_")
+        .replace(/[^a-zA-Z0-9._-]/g, "");
+      cb(null, `${Date.now()}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter: (req, file, cb) => {
     const allowed = [
       "image/jpeg",
@@ -28,65 +31,48 @@ const upload = multer({
       "video/mp4",
       "video/quicktime",
     ];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error("Type de fichier non autorisé"), false);
-    }
+    allowed.includes(file.mimetype)
+      ? cb(null, true)
+      : cb(new Error("Type non autorisé"));
   },
 });
 
-// ✅ Route d'upload
-app.post("/api/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "Aucun fichier reçu" });
-  }
+// ─── Upload ───────────────────────────────────────────────────────────────────
 
-  const client = new ftp.Client();
-  client.ftp.verbose = true; // logs détaillés dans le terminal
+app.post("/api/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Aucun fichier reçu" });
+
+  const client = new ftp.Client(30_000);
+  client.ftp.verbose = false;
 
   try {
-    // Connexion FTP
     await client.access({
       host: process.env.FTP_HOST,
       port: parseInt(process.env.FTP_PORT) || 21,
       user: process.env.FTP_USER,
       password: process.env.FTP_PASSWORD,
-      secure: false, // mettre true si ton hébergeur supporte FTPS
+      secure: false,
     });
 
-    // Naviguer vers le dossier uploads
     await client.ensureDir(process.env.FTP_UPLOAD_PATH);
+    await client.uploadFrom(req.file.path, req.file.filename);
 
-    // Nom unique pour éviter les conflits
-    const timestamp = Date.now();
-    const filename = `${timestamp}-${req.file.originalname.replace(/\s/g, "_")}`;
-
-    // Convertir le buffer en stream lisible pour basic-ftp
-    const stream = Readable.from(req.file.buffer);
-
-    // Upload
-    await client.uploadFrom(stream, filename);
-
-    client.close();
-
-    const publicUrl = `${process.env.PUBLIC_BASE_URL}/${filename}`;
-
-    return res.status(200).json({
+    res.json({
       success: true,
-      url: publicUrl,
-      filename,
+      url: `${process.env.PUBLIC_BASE_URL}/${req.file.filename}`,
+      filename: req.file.filename,
     });
   } catch (err) {
     console.error("FTP Error:", err.message);
+    res.status(500).json({ error: "Erreur FTP : " + err.message });
+  } finally {
     client.close();
-    return res.status(500).json({
-      error: "Erreur FTP : " + err.message,
-    });
+    unlink(req.file.path).catch(() => {});
   }
 });
 
-// Health check
+// ─── Health ───────────────────────────────────────────────────────────────────
+
 app.get("/", (req, res) => res.json({ status: "ok" }));
 
-app.listen(3001, () => console.log("Server running on port 3001"));
+app.listen(3001, () => console.log("🚀 Server running on port 3001"));
