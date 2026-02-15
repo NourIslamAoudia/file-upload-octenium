@@ -3,9 +3,9 @@ import multer from "multer";
 import * as ftp from "basic-ftp";
 import dotenv from "dotenv";
 import cors from "cors";
-import { unlink } from "fs/promises";
-import { fileTypeFromFile } from "file-type"; // ✅ npm install file-type
-import rateLimit from "express-rate-limit"; // ✅ npm install express-rate-limit
+import { fileTypeFromBuffer } from "file-type"; // ✅ version buffer
+import rateLimit from "express-rate-limit";
+import { Readable } from "stream";
 import path from "path";
 import crypto from "crypto";
 
@@ -17,8 +17,8 @@ app.use(cors());
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 const limiter = rateLimit({
-  windowMs: 60_000, // 1 minute
-  max: 20, // 20 uploads max par IP
+  windowMs: 60_000,
+  max: 20,
   message: { error: "Trop de requêtes, réessaye dans 1 minute." },
 });
 
@@ -33,17 +33,9 @@ const ALLOWED_MIMES = new Set([
 ]);
 
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: "/tmp",
-    filename: (req, file, cb) => {
-      // ✅ 1. Nom aléatoire — évite path traversal et conflits
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${Date.now()}-${crypto.randomUUID()}${ext}`);
-    },
-  }),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  storage: multer.memoryStorage(), // ✅ Vercel compatible
+  limits: { fileSize: 10 * 1024 * 1024 }, // ⚠️ 10MB max (RAM limitée sur Vercel)
   fileFilter: (req, file, cb) => {
-    // Premier filtre rapide sur le MIME déclaré
     ALLOWED_MIMES.has(file.mimetype)
       ? cb(null, true)
       : cb(new Error("Type non autorisé"));
@@ -55,14 +47,15 @@ const upload = multer({
 app.post("/api/upload", limiter, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Aucun fichier reçu" });
 
-  // ✅ 4. Vérification MIME réelle (contenu du fichier, pas juste le header)
-  const real = await fileTypeFromFile(req.file.path);
+  // ✅ Vérification MIME réelle depuis le buffer
+  const real = await fileTypeFromBuffer(req.file.buffer);
   if (!real || !ALLOWED_MIMES.has(real.mime)) {
-    await unlink(req.file.path).catch(() => {});
-    return res
-      .status(400)
-      .json({ error: "Fichier invalide ou type non autorisé" });
+    return res.status(400).json({ error: "Fichier invalide ou type non autorisé" });
   }
+
+  // ✅ Nom aléatoire sécurisé
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  const filename = `${Date.now()}-${crypto.randomUUID()}${ext}`;
 
   const client = new ftp.Client(30_000);
   client.ftp.verbose = false;
@@ -77,19 +70,21 @@ app.post("/api/upload", limiter, upload.single("file"), async (req, res) => {
     });
 
     await client.ensureDir(process.env.FTP_UPLOAD_PATH);
-    await client.uploadFrom(req.file.path, req.file.filename);
+
+    // ✅ Convertir buffer en stream pour basic-ftp
+    const stream = Readable.from(req.file.buffer);
+    await client.uploadFrom(stream, filename);
 
     res.json({
       success: true,
-      url: `${process.env.PUBLIC_BASE_URL}/${req.file.filename}`,
-      filename: req.file.filename,
+      url: `${process.env.PUBLIC_BASE_URL}/${filename}`,
+      filename,
     });
   } catch (err) {
     console.error("FTP Error:", err.message);
     res.status(500).json({ error: "Erreur FTP : " + err.message });
   } finally {
     client.close();
-    unlink(req.file.path).catch(() => {});
   }
 });
 
